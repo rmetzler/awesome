@@ -25,6 +25,11 @@ var server = tcp.createServer(function(socket) {
 
   function Command(line) {
 
+    // returns true if Object is an Array, else false
+    Object.prototype.isArray = function() {
+      return this.constructor == Array;
+    }
+
     function parseCommand(s) {
       var cmd = "";
       for(var idx = 0; idx < s.length; ++idx) {
@@ -292,14 +297,14 @@ var server = tcp.createServer(function(socket) {
             if (index < 0) {
               index += arr.length;
             }
-            if (index < 0 || index > arr.length) {
+            if ((index < 0) || (index > arr.length)) {
               replyString('');
             } else {
               replyString(arr[index]);
             }
           } else {
             // FEHLER
-            socket.send('-index not a number'+eol);
+            socket.send('-ERROR: index not a number'+eol);
           }
         }
       },
@@ -309,9 +314,15 @@ var server = tcp.createServer(function(socket) {
           debug("received LLEN command");
           var key = that.args[1];
           if(store.has(key)) {
-            reply(":" + store.get(key).length);
+            var value = store.get(key);
+            if (value.isArray()){
+              reply(":" + value.length);
+            } else {
+              // FEHLER
+              reply('-ERROR: NOT A LIST');
+            }
           } else {
-            // FEHLER
+            reply('-ERROR: KEY NOT FOUND');
           }
         }
       },
@@ -323,10 +334,17 @@ var server = tcp.createServer(function(socket) {
           var value = that.data || EMPTY_VALUE;
           if(!store.has(key)) {
             store.set(key, [value]);
+            socket.send(ok);
           } else {
-            store.get(key).unshift(value);
+            var arr = store.get(key);
+            
+            if (arr.isArray()) {
+              arr.unshift(value);
+              socket.send(ok);
+            } else {
+              reply('-ERROR: NOT A LIST');
+            }
           }
-          socket.send(ok);
         }
       },
       lpop : {
@@ -335,7 +353,12 @@ var server = tcp.createServer(function(socket) {
           debug("received LPOP command");
           var key = that.args[1];
           if(store.has(key)) {
-            reply(store.get(key).shift());
+            var arr = store.get(key);
+            if (arr.isArray()) {
+              reply(arr.shift());
+            } else {
+              reply('-ERROR: NOT A LIST');
+            }
           } else {
             // FEHLER
           }
@@ -349,19 +372,55 @@ var server = tcp.createServer(function(socket) {
           var value = that.data || EMPTY_VALUE;
           if(!store.has(key)) {
             store.set(key, [value]);
+            socket.send(ok);
           } else {
-            store.get(key).push(value);
+          
+            var arr = store.get(key);
+              
+            if (arr.isArray()) {
+              arr.push(value);
+              socket.send(ok);
+            } else {
+              reply('-ERROR: NOT A LIST');
+            }
+
           }
-          socket.send(ok);
+          
         }
       },
       rpop : {
-        inline: false,
+        inline: true,
         callback: function() {
           debug("received RPOP command");
           var key = that.args[1];
           if(store.has(key)) {
-            reply(store.get(key).pop());
+            var arr = store.get(key);
+            if (arr.isArray()) {
+              reply(arr.pop());
+            } else {
+              reply('-ERROR: NOT A LIST');
+            }
+          } else {
+            // FEHLER
+          }
+          
+        }
+      },
+      rpoplpush : {
+        inline: false,
+        callback: function() {
+          debug("received RPOPLPUSH command");
+          var key = that.args[1];
+          var value = that.data || EMPTY_VALUE;
+          
+          if(store.has(key)) {
+            var arr = store.get(key);
+            if (arr.isArray()) {
+              reply(arr.pop());
+              reply(arr.unshift(value));
+            } else {
+              reply('-ERROR: NOT A LIST');
+            }
           } else {
             // FEHLER
           }
