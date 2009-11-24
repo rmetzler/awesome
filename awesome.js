@@ -294,13 +294,17 @@ var server = tcp.createServer(function(socket) {
           
           if (index && store.has(key)) {
             var arr = store.get(key);
-            if (index < 0) {
-              index += arr.length;
-            }
-            if ((index < 0) || (index > arr.length)) {
-              replyString('');
+            if (arr.isArray()) {
+              if (index < 0) {
+                index += arr.length;
+              }
+              if ((index < 0) || (index > arr.length)) {
+                replyString('');
+              } else {
+                replyString(arr[index]);
+              }
             } else {
-              replyString(arr[index]);
+              socket.send('-ERROR: not a list'+eol);
             }
           } else {
             // FEHLER
