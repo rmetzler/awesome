@@ -420,8 +420,9 @@ var server = tcp.createServer(function(socket) {
           if(store.has(key)) {
             var arr = store.get(key);
             if (arr.isArray()) {
-              reply(arr.pop());
-              reply(arr.unshift(value));
+              var ret = arr.pop();
+              arr.unshift(value);
+              reply(ret);
             } else {
               reply('-ERROR: NOT A LIST');
             }
@@ -445,7 +446,7 @@ var server = tcp.createServer(function(socket) {
       foobaredcommand: {
         inline: true,
         callback: function() {
-          socket.send('-unknown function'+eol);
+          socket.send('-ERROR: unknown function'+eol);
         }
       },  
       
