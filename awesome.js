@@ -67,8 +67,23 @@ var server = tcp.createServer(function(socket) {
     }
     
     function replyString(s) {
-      reply("$" + s.length);
-      reply(s);
+      if (s === null) {
+        reply('$-1');
+        
+      } else {
+        reply("$" + s.length);
+        reply(s);
+      }
+    }
+
+    function replyArray(a) {
+      if (a === null) {
+        reply('*-1');
+      
+      } else {
+        reply('*' + a.length);
+        a.forEach(function(s){replyString(s)});
+      }
     }
 
     this.cmd = parseCommand(line).toLowerCase();
@@ -414,20 +429,32 @@ var server = tcp.createServer(function(socket) {
         inline: false,
         callback: function() {
           debug("received RPOPLPUSH command");
-          var key = that.args[1];
-          var value = that.data || EMPTY_VALUE;
+          var key1 = that.args[1];
+          var key2 = that.data;
           
-          if(store.has(key)) {
-            var arr = store.get(key);
-            if (arr.isArray()) {
-              var ret = arr.pop();
-              arr.unshift(value);
-              reply(ret);
+          if(store.has(key1)) {
+          
+            var arr1 = store.get(key1);
+            if (store.has(key2)) {
+              var arr2 = store.get(key2);
+            } else {
+              var arr2 = [];
+              store.set(key2,arr2);
+            }
+            
+            if (arr1.isArray() && arr2.isArray) {
+              var value = arr1.pop();
+              arr2.unshift(value);
+              reply(value);
             } else {
               reply('-ERROR: NOT A LIST');
             }
+            
           } else {
             // FEHLER
+            debug(key1);
+            debug(key2);
+            reply('-ERROR: KEY NOT FOUND');
           }
           
         }
