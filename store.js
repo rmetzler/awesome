@@ -42,7 +42,6 @@ exports.dump = function() {
 };
 
 exports.get = function(key) {
-  debug("getting: '" +key+ "'")
   return stores[current][key] || false;
 };
 
@@ -114,6 +113,8 @@ exports.select = function(index) {
 exports.set = function(key, value) {
   stores[current][key] = value;
 };
+
+exports.is_array = is_array;
 
 // private
 
