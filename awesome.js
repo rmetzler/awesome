@@ -20,37 +20,64 @@ var server = tcp.createServer(function(socket) {
   var eol = "\r\n";
 
   var EMPTY_VALUE = {};
+  var E_VALUE = "Operation against a key holding the wrong kind of value";
 
   var reply = {
     send: function(s) {
-      debug("reply: '" + s + "'");
+      // debug("reply: '" + s + "'");
       socket.send(s + eol);
     },
 
     ok: function() {
-      this.send("+OK")
+      reply.send("+OK")
     },
 
     bulk: function(s) {
-      this.send("$" + s.toString().length);
-      this.send(s);
+      reply.send("$" + s.toString().length);
+      reply.send(s);
+    },
+
+    empty_bulk: function() {
+      reply.send("$-1");
+    },
+
+    multi_bulk: function(values) {
+      reply.send("*" + values.length);
+      values.forEach(function(value) {
+        reply.bulk(value);
+      });
+    },
+
+    number: function(n) {
+      reply.send(":" + n);
     },
 
     error: function(s) {
-      this.send("-ERR " + s);
+      reply.send("-ERR " + s);
     },
 
-    _true: function() {
-      this.send(":1");
-    },
-
-    _false: function(s) {
-      this.send(":0");
+    bool: function(bool) {
+      var code = bool ? 1 : 0;
+      reply.send(":" + code);
     },
 
     nil: function(s) {
-      this.send("$-1");
+      reply.send("$-1");
     },
+
+    list: function(value, reply_function) {
+      if(value === false) {
+        this.error(E_VALUE);
+      } else if(value === null) {
+        this.nil();
+      } else {
+        reply_function(value);
+      }
+    },
+
+    status: function(s) {
+      reply.send("+" + s);
+    }
   };
 
   function Command(line) {
@@ -95,7 +122,6 @@ var server = tcp.createServer(function(socket) {
       // keep sorted alphabetically
       // list-related functions at the end
       dbsize: {
-        inline: true,
         callback: function() {
           debug("received DBSIZE command");
           var size = store.dbsize();
@@ -104,7 +130,6 @@ var server = tcp.createServer(function(socket) {
       },
 
       del: {
-        inline: true,
         callback:function() {
           debug("received DEL command");
           if(that.args.length > 2) {
@@ -115,16 +140,15 @@ var server = tcp.createServer(function(socket) {
             var key = that.args[1];
             if(store.has(key)) {
               store.del(key);
-              reply._true();
+              reply.bool(true);
             } else {
-              reply._false();
+              reply.bool(false);
             }
           }
         }
       },
 
       get: {
-        inline: true,
         callback: function() {
           debug("received GET command");
           var key = that.args[1];
@@ -143,7 +167,7 @@ var server = tcp.createServer(function(socket) {
       },
 
       getset: {
-        inline: false,
+        bulk: true,
         callback: function() {
           debug("received GETSET command");
           var key = that.args[1];
@@ -158,7 +182,6 @@ var server = tcp.createServer(function(socket) {
       },
 
       incr: {
-        inline: true,
         callback: function() {
           var key = that.args[1];
           var value = store.incr(key);
@@ -167,7 +190,6 @@ var server = tcp.createServer(function(socket) {
       },
 
       decr: {
-        inline: true,
         callback: function() {
           var key = that.args[1];
           var value = store.decr(key);
@@ -176,7 +198,6 @@ var server = tcp.createServer(function(socket) {
       },
 
       incrby: {
-        inline: true,
         callback: function() {
           var key = that.args[1];
           var increment = that.args[2];
@@ -186,7 +207,6 @@ var server = tcp.createServer(function(socket) {
       },
 
       decrby: {
-        inline: true,
         callback: function() {
           var key = that.args[1];
           var decrement = that.args[2];
@@ -196,28 +216,51 @@ var server = tcp.createServer(function(socket) {
       },
 
       exists: {
-        inline: true,
         callback: function() {
           debug("received EXISTS command");
           var key = that.args[1];
           if(store.has(key)) {
-            reply._true();
+            reply.bool(true);
           } else {
-            reply._false();
+            reply.bool(false);
           }
         }
       },
 
       info: {
-        inline: true,
         callback: function() {
           debug("received INFO command");
-          reply.send("awesome, the awesome node.js redis clone");
+          // TODO
+          /*
+          edis_version:0.07
+          connected_clients:1
+          connected_slaves:0
+          used_memory:3187
+          changes_since_last_save:0
+          last_save_time:1237655729
+          total_connections_received:1
+          total_commands_processed:1
+          uptime_in_seconds:25
+          uptime_in_days:0          
+          */
+          var info = [
+            "redis_version:0.07",
+            "connected_clients:1",
+            "connected_slaves:0",
+            "used_memory:3187",
+            "changes_since_last_save:0",
+            "last_save_time:1237655729",
+            "total_connections_received:1",
+            "total_commands_processed:1",
+            "uptime_in_seconds:25",
+            "uptime_in_days:0",
+            "bgsave_in_progress:0",
+          ];
+          reply.bulk(info);
         }
       },
 
       keys: {
-        inline: true,
         callback: function() {
           debug("received KEYS command");
           var pattern = that.args[1] || '*';
@@ -227,7 +270,6 @@ var server = tcp.createServer(function(socket) {
       },
 
       mget: {
-        inline: true,
         callback: function() {
           debug("received MGET command");
           var keys = that.args.slice(1);
@@ -243,8 +285,16 @@ var server = tcp.createServer(function(socket) {
         }
       },
 
+      move: {
+        callback: function() {
+          debug("received MOVE command");
+          var key = that.args[1];
+          var dbindex = that.args[2];
+          reply.bool(store.move(key, dbindex));
+        }
+      },
+
       ping: {
-        inline: true,
         callback: function() {
           debug("received PING command");
           reply.send("+PONG");
@@ -252,15 +302,46 @@ var server = tcp.createServer(function(socket) {
       },
 
       quit: {
-        inline: true,
         callback: function() {
           debug("received QUIT command");
           socket.close();
         }
       },
 
+      rename: {
+        callback: function() {
+          debug("received RENAME command");
+          var src = that.args[1];
+          var dst = that.args[2];
+          if(src == dst) {
+            reply.error("source and destination objects are the same");
+          } else if(!store.has(src)) {
+            reply.error("no such key");
+          } else {
+            store.rename(src, dst);
+            reply.ok();
+          }
+        }
+      },
+
+      renamenx: {
+        callback: function() {
+          debug("received RENAMENX command");
+          var src = that.args[1];
+          var dst = that.args[2];
+          if(src == dst) {
+            reply.error("source and destination objects are the same");
+          } else {
+            if(store.rename(src, dst, true)) {
+              reply.bool(true);
+            } else {
+              reply.bool(false);
+            }
+          }
+        }
+      },
+
       select: {
-        inline: true,
         callback: function() {
           debug("received SELECT command");
           var index = that.args[1];
@@ -270,7 +351,7 @@ var server = tcp.createServer(function(socket) {
       },
 
       set: {
-        inline: false,
+        bulk: true,
         callback: function() {
           debug("received SET command");
           var key = that.args[1];
@@ -281,22 +362,28 @@ var server = tcp.createServer(function(socket) {
       },
 
       setnx: {
-        inline: false,
+        bulk: true,
         callback: function() {
           debug("received SETNX command");
           var key = that.args[1];
           if(!store.has(key)) {
             store.set(key, that.data);
-            reply._true();
+            reply.bool(true);
           } else {
-            reply._false();
+            reply.bool(false);
           }
         }
       },
-      
+
+      type: {
+        callback: function() {
+          var key = that.args[1];
+          reply.status(store.type(key));
+        }
+      },
+
       // list related functions
       lindex: {
-        inline: true,
         callback: function() {
           debug("received LINDEX command");
           var key = that.args[1];
@@ -309,114 +396,327 @@ var server = tcp.createServer(function(socket) {
           }
 
           if(store.has(key)) {
-            var value = store.get(key);
-            if(!store.is_array(value)) {
-              reply.error("Operation against a key holding the wrong kind of value");
-              return;
-            }
-            if(index < 0) {
-              index = value.length + index;
-            }
-            if(index < 0 || index > value.length) {
-              reply.bulk('');
-            } else {
-              reply.bulk(value[index]);
-            }
+            var value = store.lindex(key, index);
+            reply.list(value, reply.bulk);
           }
         }
       },
 
       llen: {
-        inline: true,
         callback: function() {
           debug("received LLEN command");
           var key = that.args[1];
-          var value = store.get(key);
-          if(value !== false) {
-            if(store.is_array(value)) {
-              reply.send(":" + value.length);
-            } else {
-              reply.error("Operation against a key holding the wrong kind of value");
-            }
+          var value = store.llen(key);
+          if(value === false) {
+            reply.error(E_VALUE);
           } else {
-            reply.send(":0");
+            reply.send(":" + value);
           }
         }
       },
 
       lpush: {
-        inline: false,
+        bulk: true,
         callback: function() {
           debug("received LPUSH command");
           var key = that.args[1];
           var value = that.data || EMPTY_VALUE;
-          if(!store.has(key)) {
-            store.set(key, [value]);
+          if(store.lpush(key, value)) {
+            reply.ok();
           } else {
-            var old_value = store.get(key);
-            if(store.is_array(old_value)) {
-              old_value.unshift(value);
-            } else {
-              reply.error("Operation against a key holding the wrong kind of value");
-              return;
-            }
+            reply.error(E_VALUE);
           }
-          reply.ok();
         }
       },
 
       lpop: {
-        inline: true,
         callback: function() {
           debug("received LPOP command");
           var key = that.args[1];
-          var value = store.get(key);
-          if(value && value.length > 0) {
-            reply.send(value.shift());
-          } else {
-            reply.send("$-1");
-          }
+          var value = store.lpop(key);
+          reply.list(value, reply.bulk);
         }
       },
 
       rpush: {
-        inline: false,
+        bulk: true,
         callback: function() {
           debug("received RPUSH command");
-          var key = that.args[1];
-          var value = that.data || EMPTY_VALUE;
-          if(!store.has(key)) {
-            store.set(key, [value]);
-          } else {
-            var old_value = store.get(key);
-            if(store.is_array(old_value)) {
-              old_value.push(value);
+            var key = that.args[1];
+            var value = that.data || EMPTY_VALUE;
+            if(store.rpush(key, value)) {
+              reply.ok();
             } else {
-              reply.error("Operation against a key holding the wrong kind of value");
-              return;
+              reply.error(E_VALUE);
             }
           }
-          reply.ok();
-        }
       },
 
       rpop: {
-        inline: false,
         callback: function() {
           debug("received RPOP command");
-          var key = that.args[1];
-          var value = store.get(key);
-          if(value && value.length > 0) {
-            reply.send(value.shift());
-          } else {
-            reply.send("$-1");
+            var key = that.args[1];
+            var value = store.rpop(key);
+            reply.list(value, reply.bulk);
           }
+      },
+
+      rpoplpush: {
+        bulk: true,
+        callback: function() {
+          debug("received RPOPLPUSH command");
+          var src = that.args[1];
+          var dst = that.data;
+
+          var value = store.rpop(src);
+          if(value === null) {
+            reply.nil();
+          } else if(value === false) {
+            reply.error(E_VALUE);
+          } else {
+            if(store.lpush(dst, value)) {
+              reply.bulk(value);
+            } else {
+              // restore src
+              store.rpush(src, value);
+              reply.error(E_VALUE);
+            }
+          }
+        }
+      },
+
+      lrange: {
+        callback: function() {
+          debug("received LRANGE command");
+          var key = that.args[1];
+          var start = that.args[2];
+          var end = that.args[3];
+          var value = store.lrange(key, start, end);
+          if(value === null) {
+            reply.empty_bulk();
+          } else {
+            reply.multi_bulk(value);
+          }
+        }
+      },
+
+      lset: {
+        bulk: true,
+        callback: function() {
+          debug("received LSET command");
+          var key = that.args[1];
+          var index = that.args[2];
+          var value = that.data;
+
+          var result = store.lset(key, index, value);
+          if(result === null) {
+            reply.error("no such key");
+          } else if(result === undefined) {
+            reply.error("index out of range");
+          } else if(result === false) {
+            reply.error(E_VALUE);
+          } else {
+            reply.ok();
+          }
+        }
+      },
+
+      ltrim: {
+        callback: function() {
+          debug("received LTRIM command");
+          var key = that.args[1];
+          var start = that.args[2];
+          var end = that.args[3];
+          var status = store.ltrim(key, start, end);
+          if(status === null) {
+            reply.error("no such key");
+          } else if(status === false) {
+            reply.error(E_VALUE);
+          } else {
+            reply.ok();
+          }
+        }
+      },
+
+      sadd: {
+        bulk: true,
+        callback: function() {
+          debug("received SADD command");
+          var key = that.args[1];
+          var member = that.data;
+          var result = store.sadd(key, member);
+          if(result === null) { // the key is already in the set
+            reply.bool(false);
+          } else if (result === false) {
+            reply.error(E_VALUE);
+          } else {
+            reply.bool(true);
+          }
+        }
+      },
+
+      scard: {
+        callback: function() {
+          debug("received SCARD command");
+          var key = that.args[1];
+          var result = store.scard(key);
+          reply.send(":" + result);
+        }
+      },
+
+      sismember: {
+        bulk: true,
+        callback: function() {
+          debug("received SISMEMBER command");
+          var key = that.args[1];
+          var member = that.data;
+          reply.bool(store.sismember(key, member));
+        }
+      },
+
+      smembers: {
+        callback: function() {
+          debug("received SMEMBERS command");
+          var key = that.args[1];
+          var members = store.smembers(key);
+          reply.multi_bulk(members);
+        }
+      },
+
+      srem: {
+        bulk: true,
+        callback: function() {
+          debug("received SREM command");
+          var key = that.args[1];
+          var member = that.data;
+          var result = store.srem(key, member);
+          if(result === null) {
+            reply.error(E_VALUE);
+          } else {
+            reply.bool(result);
+          }
+        }
+      },
+
+      sdiff: {
+        callback: function() {
+          var keys = that.args.slice(1);
+          var result = store.sdiff(keys);
+          reply.multi_bulk(result);
+        }
+      },
+
+      sinter: {
+        callback: function() {
+          var keys = that.args.slice(1);
+          var result = store.sinter(keys);
+          reply.multi_bulk(result);
+        }
+      },
+
+      sinterstore: {
+        callback: function() {
+          var dst = that.args[1];
+          var keys = that.args.slice(2);
+          var result = store.sinter(keys, true);
+          if(result) {
+            store.set(dst, result);
+            reply.number(result.length);
+          } else {
+            reply.ok();
+          }
+        }
+      },
+
+      sunion: {
+        callback: function() {
+          var keys = that.args.slice(1);
+          var result = store.sunion(keys);
+          reply.multi_bulk(result);
+        }
+      },
+
+      sunionstore: {
+        callback: function() {
+          var dst = that.args[1];
+          var keys = that.args.slice(2);
+          var result = store.sunion(keys, true);
+          if(result) {
+            store.set(dst, result);
+            reply.number(result.length);
+          } else {
+            reply.ok();
+          }
+        }
+      },
+
+      sdiffstore: {
+        callback: function() {
+          var dst = that.args[1];
+          var keys = that.args.slice(2);
+          var result = store.sdiff(keys, true);
+          if(result) {
+            store.set(dst, result);
+            reply.number(result.length);
+          } else {
+            reply.ok();
+          }
+        }
+      },
+
+      spop: {
+        callback: function() {
+          debug("received SPOP command");
+          var key = that.args[1];
+          var result = store.spop(key);
+          if(result === null) {
+            reply.nil();
+          } else if(result === false) {
+            reply.error(E_VALUE);
+          } else {
+            reply.bulk(result);
+          }
+        }
+      },
+
+      srandmember: {
+        callback: function() {
+          var key = that.args[1];
+          var value = store.srandmember(key);
+          if(key === false) {
+            reply.error(E_VALUE);
+          } else {
+            reply.bulk(value);
+          }
+        }
+      },
+
+      // sorted sets
+      zadd: {
+        bulk: true,
+        callback: function() {
+          var key = that.args[1];
+          var score = that.args[2];
+          var member = that.args[3];
+          var result = store.zadd(key, score, member);
+          if(result === false) {
+            reply.error(E_VALUE);
+          } else {
+            reply.bool(!!result);
+          }
+        }
+      },
+
+      // storage
+      save: {
+        callback: function() {
+          store.save();
+          reply.ok();
         }
       },
 
       // for debugging
       dump: {
-        inline: true,
         callback: function() {
           debug("received DUMP command");
           sys.print(store.dump() + eol);
@@ -431,7 +731,7 @@ var server = tcp.createServer(function(socket) {
         return true; // unkown cmds are inline
       }
 
-      return callbacks[this.cmd].inline;
+      return !callbacks[this.cmd].bulk;
     };
 
     this.setData = function(data) {
@@ -453,8 +753,8 @@ var server = tcp.createServer(function(socket) {
   socket.setEncoding("utf8"); // check with redis protocol
 
   function debug(s) {
-    if(enable_debug) {
-      sys.print(s.substr(0,40) + eol);
+    if(enable_debug && s !== null) {
+      sys.print(s.toString().substr(0,40) + eol);
     }
   }
 
@@ -474,7 +774,7 @@ var server = tcp.createServer(function(socket) {
   var cmd = {};
   socket.addListener("receive", function(packet) {
     buffer += packet;
-    debug("read: '" + buffer.substr(0, 36) + "'");
+    debug("read: '" + buffer.substr(0, 64) + "'");
     var idx;
     while(idx = buffer.indexOf(eol) != -1) { // we have a newline
       if(in_bulk_request) {
