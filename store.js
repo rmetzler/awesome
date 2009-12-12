@@ -41,6 +41,10 @@ exports.dump = function() {
   return JSON.stringify(stores);
 };
 
+exports.flushdb = function() {
+  stores[current] = {};
+};
+
 exports.get = function(key) {
   return stores[current][key] || null;
 };
@@ -94,13 +98,18 @@ exports.keys = function(pattern) {
       }
     }
   }
-  return result.join(" ");
+  return result;
 };
 
 exports.mget = function(keys) {
   var values = [];
   return keys.map(function(key) {
-    return exports.get(key);
+    var value =  exports.get(key);
+    if(is_array(value) || is_set(value)) {
+      return "";
+    }
+
+    return value;
   });
 };
 
@@ -116,6 +125,23 @@ exports.move = function(key, dbindex) {
   var value = this.get(key);
   this.set(key, value, dbindex);
   this.del(key);
+};
+
+exports.randomkey = function() {
+  if(store[current] == {}) {
+    return "";
+  }
+
+  var max = this.dbsize();
+  var stop = get_random_int(0, max);
+  var counter = 0;
+  for(var idx in stores[current]) {
+    if(counter == stop) {
+      return idx;
+    }
+    counter = counter + 1;
+  }
+  return "";
 };
 
 exports.rename = function(src, dst, do_not_overwrite) {
@@ -180,7 +206,13 @@ exports.llen = function(key) {
     return false;
   }
 
-  return value.length;
+  var real_length = 0;
+  for(var idx = 0; idx < value.length; idx++) {
+    if(value[idx] !== undefined) {
+      real_length++;
+    }
+  }
+  return real_length;
 }
 
 exports.lpush = function(key, value) {
@@ -268,6 +300,50 @@ exports.lrange = function(key, start, end) {
   }
   var slice =  value.slice(start, end);
   return slice;
+};
+
+exports.lrem = function(key, count, value) {
+  if(!this.has(key)) {
+    return 0;
+  }
+
+  var list = this.get(key);
+  if(!is_array(list)) {
+    return false;
+  }
+
+  count = parseInt(count);
+  var stop_at_count = true;
+  if(count == 0) {
+    stop_at_count = false;
+  }
+
+  var deleted = 0;
+  if(count >= 0) {
+    for(var idx = 0; idx < list.length; idx++) {
+      if(list[idx] == value) {
+        delete list[idx];
+        deleted = deleted + 1;
+        count = count - 1;
+        if(stop_at_count && count == 0) {
+          return deleted;
+        }
+      }
+    }
+  } else { // delete from the back
+    for(var idx = list.length - 1; idx >= 0; idx--) {
+      debug("idx: " + idx);
+      if(list[idx] == value) {
+        delete list[idx];
+        deleted = deleted + 1;
+        count = count + 1;
+        if(stop_at_count && count == 0) {
+          return deleted;
+        }
+      }
+    }
+  }
+  return deleted;
 };
 
 exports.lset = function(key, index, value) {
@@ -366,11 +442,6 @@ exports.srandmember = function(key) {
       return idx;
     }
     row = row + 1;
-  }
-
-  // from https://developer.mozilla.org/en/Core_JavaScript_1.5_Reference/Global_Objects/Math/random
-  function get_random_int(min, max) {
-    return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 };
 
@@ -527,10 +598,19 @@ exports.type = function(key) {
   return "string";
 };
 
+exports.sort = function(key, options) {
+  var sorter = require("./sorter");
+  debug("options in store.js: "+ options)
+  sorter.parse(options);
+
+  return sorter.sort(this.get(key), key);
+};
+
 // TODO: make private again
 exports.is_array = is_array;
 
 // private
+
 
 function ZSet() {
   this.store = {};
@@ -560,6 +640,11 @@ function ZSet() {
     return true;
   };
   return this;
+}
+
+// from https://developer.mozilla.org/en/Core_JavaScript_1.5_Reference/Global_Objects/Math/random
+function get_random_int(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 function keymatch(key, pattern) {
@@ -594,6 +679,6 @@ function is_set(s) {
 }
 
 function debug(s) {
-  sys.print(s + "\r\n");
+  sys.puts(s + "\r\n");
 }
 

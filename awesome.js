@@ -24,7 +24,7 @@ var server = tcp.createServer(function(socket) {
 
   var reply = {
     send: function(s) {
-      // debug("reply: '" + s + "'");
+      debug("reply: '" + s || "null" + "'");
       socket.send(s + eol);
     },
 
@@ -42,7 +42,13 @@ var server = tcp.createServer(function(socket) {
     },
 
     multi_bulk: function(values) {
-      reply.send("*" + values.length);
+      var real_length = 0;
+      for(var idx = 0; idx < values.length; idx++) {
+        if(values[idx] !== undefined) {
+          real_length++;
+        }
+      }
+      reply.send("*" + real_length);
       values.forEach(function(value) {
         reply.bulk(value);
       });
@@ -135,7 +141,7 @@ var server = tcp.createServer(function(socket) {
           if(that.args.length > 2) {
             var keys = that.args.slice(1);
             var deleted = store.del(keys);
-            reply.send(":" + deleted);
+            reply.number(deleted);
           } else {
             var key = that.args[1];
             if(store.has(key)) {
@@ -145,6 +151,14 @@ var server = tcp.createServer(function(socket) {
               reply.bool(false);
             }
           }
+        }
+      },
+
+      flushdb: {
+        callback: function() {
+          debug("received FLUSHDB command");
+          store.flushdb();
+          reply.ok();
         }
       },
 
@@ -264,7 +278,7 @@ var server = tcp.createServer(function(socket) {
         callback: function() {
           debug("received KEYS command");
           var pattern = that.args[1] || '*';
-          var result = store.keys(pattern);
+          var result = store.keys(pattern).join(" ");
           reply.bulk(result);
         }
       },
@@ -291,6 +305,18 @@ var server = tcp.createServer(function(socket) {
           var key = that.args[1];
           var dbindex = that.args[2];
           reply.bool(store.move(key, dbindex));
+        }
+      },
+
+      mset: {
+        bulk: true,
+        callback: function() {
+          debug("received MSET command");
+          var msets = that.multi_data;
+          for(var idx in msets) {
+            store.set(idx, msets[idx]);
+          }
+          reply.ok();
         }
       },
 
@@ -372,6 +398,19 @@ var server = tcp.createServer(function(socket) {
           } else {
             reply.bool(false);
           }
+        }
+      },
+
+      sort: {
+        callback: function() {
+          var key = that.args[1];
+          var options = that.args.slice(2).join(" ");
+          debug("options in awseome.js: " + options);
+          var result = store.sort(key, options);
+          debug("result:");
+          debug(result);
+          debug(typeof result);
+          reply.multi_bulk(result);
         }
       },
 
@@ -495,7 +534,25 @@ var server = tcp.createServer(function(socket) {
           if(value === null) {
             reply.empty_bulk();
           } else {
+            debug("value: " + value);
             reply.multi_bulk(value);
+          }
+          debug("replied");
+        }
+      },
+
+      lrem: {
+        bulk: true,
+        callback: function() {
+          debug("received LREM comand");
+          var key = that.args[1];
+          var count = parseInt(that.args[2]);
+          var value = that.data;
+          var result = store.lrem(key, count, value);
+          if(result === false) {
+            reply.error(E_VALUE);
+          } else {
+            reply.number(result);
           }
         }
       },
@@ -535,6 +592,14 @@ var server = tcp.createServer(function(socket) {
           } else {
             reply.ok();
           }
+        }
+      },
+
+      randomkey: {
+        callback: function() {
+          debug("received RANDOMKEY command");
+          var value = store.randomkey();
+          reply.status(value);
         }
       },
 
@@ -736,7 +801,24 @@ var server = tcp.createServer(function(socket) {
 
     this.setData = function(data) {
       this.data = data.trim();
-    }
+    },
+
+    this.setMultiBulkData = function(lines) {
+      lines = lines.slice(1);
+      var result = {};
+      var key = null;
+      for(var idx = 0; idx < lines.length; idx++) {
+        if(idx % 2) { // skip even lines
+          if(!key) {
+            key = lines[idx];
+          } else {
+            result[key] = lines[idx];
+            key = null;
+          }
+        }
+      }
+      this.multi_data = result;
+    },
 
     this.exec = function() {
       debug("in exec '" + this.cmd + "'");
@@ -754,7 +836,7 @@ var server = tcp.createServer(function(socket) {
 
   function debug(s) {
     if(enable_debug && s !== null) {
-      sys.print(s.toString().substr(0,40) + eol);
+      sys.print(s.toString().substr(0,128) + eol);
     }
   }
 
@@ -769,41 +851,80 @@ var server = tcp.createServer(function(socket) {
     return s.substring(start, s.indexOf(eol, start));
   }
 
+  function string_count(haystack, needle) {
+    var regex = new RegExp(needle, "g");
+    var result = haystack.match(regex);
+    if(result) {
+      return result.length - 1;
+    } else {
+      return 0;
+    }
+  }
+
   var buffer = "";
   var in_bulk_request = false;
+  var in_multi_bulk_request = false;
   var cmd = {};
   socket.addListener("receive", function(packet) {
     buffer += packet;
     debug("read: '" + buffer.substr(0, 64) + "'");
-    var idx;
-    while(idx = buffer.indexOf(eol) != -1) { // we have a newline
-      if(in_bulk_request) {
-        debug("in bulk req");
-        // later
-        cmd.setData(buffer);
-        in_bulk_request = false;
-        buffer = adjustBuffer(buffer);
-        cmd.exec();
+    while(buffer.indexOf(eol) != -1) { // we have a newline
+      if(in_multi_bulk_request) {
+        debug("in multi bulk request");
+        // handle multi bulk requests
+        if(!cmd_length) {
+          var cmd_length = cmd.len * 2; // *2 = $len
+        }
+        debug("cmd_length: " + cmd_length);
+        debug("string_count: " + string_count(buffer, eol));
+        if(string_count(buffer, eol) == cmd_length) {
+          var lines = buffer.split(eol);
+          cmd.cmd = lines[2];
+          lines = lines.slice(2); // chop off *len\n$4\nmget
+          cmd.setMultiBulkData(lines)
+          cmd_length++;
+          while(cmd_length--) {
+            buffer = adjustBuffer(buffer);
+          }
+          in_multi_bulk_request = false;
+          cmd.exec();
+          
+        }
       } else {
-        // not a bulk request yet
-        debug("not in bulk req yet");
-        cmd = Command(buffer);
-        if(cmd.is_inline()) {
+        // handle bulk requests
+        if(in_bulk_request) {
+          debug("in bulk req");
+          cmd.setData(buffer);
+          in_bulk_request = false;
+          buffer = adjustBuffer(buffer);
           cmd.exec();
         } else {
-          if(buffer.indexOf(eol) != buffer.lastIndexOf(eol)) { // two new lines
-            debug("received a bulk command in a single buffer");
-            // parse out command line
-            cmd.setData(parseData(buffer));
-            in_bulk_request = false;
-            buffer = adjustBuffer(buffer);
+          // not a bulk request yet
+          debug("not in bulk req (yet)");
+          cmd = Command(buffer);
+          if(cmd.cmd.charAt(0) == "*") {
+            cmd.len = cmd.cmd.charAt(1);
+            in_multi_bulk_request = true;
+            continue;
+          }
+          if(cmd.is_inline()) {
+            debug("is inline command");
             cmd.exec();
           } else {
-            debug("wait for bulk: '" + buffer + "'");
-            in_bulk_request = true;
+            if(buffer.indexOf(eol) != buffer.lastIndexOf(eol)) { // two new lines
+              debug("received a bulk command in a single buffer");
+              // parse out command line
+              cmd.setData(parseData(buffer));
+              in_bulk_request = false;
+              buffer = adjustBuffer(buffer);
+              cmd.exec();
+            } else {
+              debug("wait for bulk: '" + buffer + "'");
+              in_bulk_request = true;
+            }
           }
+          buffer = adjustBuffer(buffer);
         }
-        buffer = adjustBuffer(buffer);
       }
     }
   });
